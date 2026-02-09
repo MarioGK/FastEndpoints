@@ -4,6 +4,7 @@
 
 using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using FastEndpoints.Swagger.ValidationProcessor;
 using FastEndpoints.Swagger.ValidationProcessor.Extensions;
 using FluentValidation;
@@ -305,16 +306,16 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                                 var valueToCompare = Convert.ToDecimal(comparisonValidator.ValueToCompare);
 
                                 if (comparisonValidator.Comparison == Comparison.GreaterThanOrEqual)
-                                    concreteProp.Minimum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.Minimum = valueToCompare.ToString(CultureInfo.InvariantCulture);
                                 else if (comparisonValidator.Comparison == Comparison.GreaterThan)
                                 {
-                                    concreteProp.ExclusiveMinimum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.ExclusiveMinimum = valueToCompare.ToString(CultureInfo.InvariantCulture);
                                 }
                                 else if (comparisonValidator.Comparison == Comparison.LessThanOrEqual)
-                                    concreteProp.Maximum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.Maximum = valueToCompare.ToString(CultureInfo.InvariantCulture);
                                 else if (comparisonValidator.Comparison == Comparison.LessThan)
                                 {
-                                    concreteProp.ExclusiveMaximum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.ExclusiveMaximum = valueToCompare.ToString(CultureInfo.InvariantCulture);
                                 }
                             }
                         }
@@ -332,17 +333,17 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                             if (betweenValidator.From.IsNumeric())
                             {
                                 if (betweenValidator.GetType().IsSubClassOfGeneric(typeof(ExclusiveBetweenValidator<,>)))
-                                    concreteProp.ExclusiveMinimum = Convert.ToDecimal(betweenValidator.From).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.ExclusiveMinimum = Convert.ToDecimal(betweenValidator.From).ToString(CultureInfo.InvariantCulture);
                                 else
-                                    concreteProp.Minimum = Convert.ToDecimal(betweenValidator.From).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.Minimum = Convert.ToDecimal(betweenValidator.From).ToString(CultureInfo.InvariantCulture);
                             }
 
                             if (betweenValidator.To.IsNumeric())
                             {
                                 if (betweenValidator.GetType().IsSubClassOfGeneric(typeof(ExclusiveBetweenValidator<,>)))
-                                    concreteProp.ExclusiveMaximum = Convert.ToDecimal(betweenValidator.To).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.ExclusiveMaximum = Convert.ToDecimal(betweenValidator.To).ToString(CultureInfo.InvariantCulture);
                                 else
-                                    concreteProp.Maximum = Convert.ToDecimal(betweenValidator.To).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    concreteProp.Maximum = Convert.ToDecimal(betweenValidator.To).ToString(CultureInfo.InvariantCulture);
                             }
                         }
             },
