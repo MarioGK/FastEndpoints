@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
+        <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
         <NoWarn>1701;1702;CS1591;CS1573</NoWarn>
         <Description>Swagger support for FastEndpoints.</Description>
         <PackageIcon>icon.png</PackageIcon>
@@ -12,7 +13,8 @@
     <ItemGroup>
         <ProjectReference Include="..\Library\FastEndpoints.csproj"/>
 
-        <PackageReference Include="NSwag.AspNetCore"/>
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi"/>
+        <PackageReference Include="Scalar.AspNetCore"/>
         <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All"/>
     </ItemGroup>
 
