@@ -29,6 +29,21 @@ public class DocumentOptions(IServiceProvider serviceProvider)
     public Action<OpenApiOptions>? DocumentSettings { get; set; }
 
     /// <summary>
+    /// the name of the swagger document
+    /// </summary>
+    public string? DocumentName { get; set; }
+
+    /// <summary>
+    /// the title of the swagger document
+    /// </summary>
+    public string? Title { get; set; }
+
+    /// <summary>
+    /// the version of the swagger document
+    /// </summary>
+    public string? Version { get; set; }
+
+    /// <summary>
     /// by default GET request DTO properties are automatically converted to query parameters because fetch-client/swagger ui doesn't support it.
     /// set this to true if for some reason you'd like to disable this auto conversion and allow GET requests with a body.
     /// </summary>

@@ -39,6 +39,12 @@ public static class Extensions
 
         var docName = $"v{Interlocked.Increment(ref _docIndex)}";
 
+        // Pre-resolve document name from user options
+        var tempDocForName = new DocumentOptions(null!);
+        options?.Invoke(tempDocForName);
+        if (tempDocForName.DocumentName is not null)
+            docName = tempDocForName.DocumentName;
+
         // We need to capture the document options configuration for later use by transformers
         // Since AddOpenApi doesn't provide IServiceProvider, we store config and let transformers resolve services
         var docConfig = new DocumentOptionsConfig { ConfigureAction = options };
@@ -102,6 +108,24 @@ public static class Extensions
                 if (tempDoc.RemoveEmptyRequestSchema || tempDoc.FlattenSchema)
                 {
                     openApiOptions.AddSchemaTransformer(new FlattenSchemaTransformer());
+                }
+
+                // Set document title and version via document transformer
+                if (tempDoc.Title is not null || tempDoc.Version is not null)
+                {
+                    var title = tempDoc.Title;
+                    var version = tempDoc.Version;
+                    openApiOptions.AddDocumentTransformer(
+                        (doc, _, _) =>
+                        {
+                            doc.Info ??= new OpenApiInfo();
+                            if (title is not null)
+                                doc.Info.Title = title;
+                            if (version is not null)
+                                doc.Info.Version = version;
+
+                            return Task.CompletedTask;
+                        });
                 }
 
                 tempDoc.DocumentSettings?.Invoke(openApiOptions);
