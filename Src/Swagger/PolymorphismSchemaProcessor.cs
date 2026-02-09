@@ -1,33 +1,37 @@
-﻿using Newtonsoft.Json.Linq;
-using NJsonSchema.Generation;
+using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.OpenApi;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
-sealed class PolymorphismSchemaProcessor(DocumentOptions opts) : ISchemaProcessor
+sealed class PolymorphismSchemaTransformer(DocumentOptions opts) : IOpenApiSchemaTransformer
 {
-    public void Process(SchemaProcessorContext ctx)
+    public Task TransformAsync(OpenApiSchema schema, OpenApiSchemaTransformerContext context, CancellationToken cancellationToken)
     {
         if (opts.UseOneOfForPolymorphism is false ||
-            ctx.Schema.DiscriminatorObject?.Mapping.Count is null or 0 ||
-            ctx.Schema.OneOf.Count != 0)
-            return;
+            schema.Discriminator?.Mapping is null ||
+            schema.Discriminator.Mapping.Count == 0 ||
+            schema.OneOf is { Count: > 0 })
+            return Task.CompletedTask;
 
-        foreach (var derSchema in ctx.Schema.DiscriminatorObject.Mapping.Values)
-            ctx.Schema.OneOf.Add(derSchema);
-
-        if (ctx.Schema.Discriminator is null || ctx.Schema.Example is not null)
-            return;
-
-        var jt = ctx.Schema.OneOf.First().ToSampleJson();
-        var jo = new JObject { { ctx.Schema.Discriminator, ctx.Schema.DiscriminatorObject.Mapping.First().Key } };
-
-        foreach (var t in jt)
+        // Add derived schemas to oneOf
+        schema.OneOf ??= [];
+        foreach (var mapping in schema.Discriminator.Mapping)
         {
-            var p = (JProperty)t;
-
-            if (p.Name != ctx.Schema.Discriminator)
-                jo.Add(p);
+            schema.OneOf.Add(mapping.Value);
         }
-        ctx.Schema.Example = jo;
+
+        if (schema.Discriminator.PropertyName is null || schema.Example is not null)
+            return Task.CompletedTask;
+
+        // Generate example with discriminator
+        var example = new JsonObject
+        {
+            [schema.Discriminator.PropertyName] = schema.Discriminator.Mapping.FirstOrDefault().Key
+        };
+
+        schema.Example = example;
+
+        return Task.CompletedTask;
     }
 }

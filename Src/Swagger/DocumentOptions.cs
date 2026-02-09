@@ -1,4 +1,4 @@
-using NSwag.Generation.AspNetCore;
+using Microsoft.AspNetCore.OpenApi;
 using System.Text.Json;
 
 namespace FastEndpoints.Swagger;
@@ -26,7 +26,22 @@ public class DocumentOptions(IServiceProvider serviceProvider)
     /// <summary>
     /// a function for configuring the swagger document generator settings
     /// </summary>
-    public Action<AspNetCoreOpenApiDocumentGeneratorSettings>? DocumentSettings { get; set; }
+    public Action<OpenApiOptions>? DocumentSettings { get; set; }
+
+    /// <summary>
+    /// the name of the swagger document
+    /// </summary>
+    public string? DocumentName { get; set; }
+
+    /// <summary>
+    /// the title of the swagger document
+    /// </summary>
+    public string? Title { get; set; }
+
+    /// <summary>
+    /// the version of the swagger document
+    /// </summary>
+    public string? Version { get; set; }
 
     /// <summary>
     /// by default GET request DTO properties are automatically converted to query parameters because fetch-client/swagger ui doesn't support it.
@@ -93,11 +108,6 @@ public class DocumentOptions(IServiceProvider serviceProvider)
     /// json serializer options
     /// </summary>
     public Action<JsonSerializerOptions>? SerializerSettings { get; set; }
-
-    /// <summary>
-    /// any additional newtonsoft serializer settings. most useful for registering custom converters.
-    /// </summary>
-    public Action<Newtonsoft.Json.JsonSerializerSettings>? NewtonsoftSettings { get; set; }
 
     /// <summary>
     /// set to true if you'd like schema names to be just the class name instead of the full name.

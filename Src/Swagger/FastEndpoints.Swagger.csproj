@@ -12,7 +12,8 @@
     <ItemGroup>
         <ProjectReference Include="..\Library\FastEndpoints.csproj"/>
 
-        <PackageReference Include="NSwag.AspNetCore"/>
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi"/>
+        <PackageReference Include="Scalar.AspNetCore"/>
         <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All"/>
     </ItemGroup>
 

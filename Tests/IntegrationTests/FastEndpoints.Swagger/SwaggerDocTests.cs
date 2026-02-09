@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace Swagger;
 
 public class SwaggerDocTests(Fixture App) : TestBase<Fixture>
@@ -12,48 +14,43 @@ public class SwaggerDocTests(Fixture App) : TestBase<Fixture>
     [Fact]
     public async Task release_0_doc()
     {
-        var doc = await App.DocGenerator.GenerateAsync("Initial Release");
-        var json = doc.ToJson();
-        var currentDoc = JToken.Parse(json);
+        var json = await App.GenerateDocumentJsonAsync("Initial Release");
+        var currentDoc = JsonNode.Parse(json);
 
         await UpdateSnapshotIfEnabled("release-0.json", json);
 
         var snapshot = await File.ReadAllTextAsync("release-0.json", Cancellation);
-        var snapshotDoc = JToken.Parse(snapshot);
+        var snapshotDoc = JsonNode.Parse(snapshot);
 
-        currentDoc.ShouldBeEquivalentTo(snapshotDoc);
+        JsonNode.DeepEquals(currentDoc, snapshotDoc).ShouldBeTrue();
     }
 
     [Fact]
     public async Task release_1_doc()
     {
-        var doc = await App.DocGenerator.GenerateAsync("Release 1.0");
-        var json = doc.ToJson();
-
-        var currentDoc = JToken.Parse(json);
+        var json = await App.GenerateDocumentJsonAsync("Release 1.0");
+        var currentDoc = JsonNode.Parse(json);
 
         await UpdateSnapshotIfEnabled("release-1.json", json);
 
         var snapshot = await File.ReadAllTextAsync("release-1.json", Cancellation);
-        var snapshotDoc = JToken.Parse(snapshot);
+        var snapshotDoc = JsonNode.Parse(snapshot);
 
-        currentDoc.ShouldBeEquivalentTo(snapshotDoc);
+        JsonNode.DeepEquals(currentDoc, snapshotDoc).ShouldBeTrue();
     }
 
     [Fact]
     public async Task release_2_doc()
     {
-        var doc = await App.DocGenerator.GenerateAsync("Release 2.0");
-        var json = doc.ToJson();
-
-        var currentDoc = JToken.Parse(json);
+        var json = await App.GenerateDocumentJsonAsync("Release 2.0");
+        var currentDoc = JsonNode.Parse(json);
 
         await UpdateSnapshotIfEnabled("release-2.json", json);
 
         var snapshot = await File.ReadAllTextAsync("release-2.json", Cancellation);
-        var snapshotDoc = JToken.Parse(snapshot);
+        var snapshotDoc = JsonNode.Parse(snapshot);
 
-        currentDoc.ShouldBeEquivalentTo(snapshotDoc);
+        JsonNode.DeepEquals(currentDoc, snapshotDoc).ShouldBeTrue();
     }
 
     // ReSharper disable once UnusedMember.Local
@@ -72,60 +69,56 @@ public class SwaggerDocTests(Fixture App) : TestBase<Fixture>
     [Fact]
     public async Task release_versioning_v0()
     {
-        var doc = await App.DocGenerator.GenerateAsync("ReleaseVersioning - v0");
-        var json = doc.ToJson();
-        var currentDoc = JToken.Parse(json);
+        var json = await App.GenerateDocumentJsonAsync("ReleaseVersioning - v0");
+        var currentDoc = JsonNode.Parse(json);
 
         await UpdateSnapshotIfEnabled("release-versioning-v0.json", json);
 
         var snapshot = await File.ReadAllTextAsync("release-versioning-v0.json", Cancellation);
-        var snapshotDoc = JToken.Parse(snapshot);
+        var snapshotDoc = JsonNode.Parse(snapshot);
 
-        currentDoc.ShouldBeEquivalentTo(snapshotDoc);
+        JsonNode.DeepEquals(currentDoc, snapshotDoc).ShouldBeTrue();
     }
 
     [Fact]
     public async Task release_versioning_v1()
     {
-        var doc = await App.DocGenerator.GenerateAsync("ReleaseVersioning - v1");
-        var json = doc.ToJson();
-        var currentDoc = JToken.Parse(json);
+        var json = await App.GenerateDocumentJsonAsync("ReleaseVersioning - v1");
+        var currentDoc = JsonNode.Parse(json);
 
         await UpdateSnapshotIfEnabled("release-versioning-v1.json", json);
 
         var snapshot = await File.ReadAllTextAsync("release-versioning-v1.json", Cancellation);
-        var snapshotDoc = JToken.Parse(snapshot);
+        var snapshotDoc = JsonNode.Parse(snapshot);
 
-        currentDoc.ShouldBeEquivalentTo(snapshotDoc);
+        JsonNode.DeepEquals(currentDoc, snapshotDoc).ShouldBeTrue();
     }
 
     [Fact]
     public async Task release_versioning_v2()
     {
-        var doc = await App.DocGenerator.GenerateAsync("ReleaseVersioning - v2");
-        var json = doc.ToJson();
-        var currentDoc = JToken.Parse(json);
+        var json = await App.GenerateDocumentJsonAsync("ReleaseVersioning - v2");
+        var currentDoc = JsonNode.Parse(json);
 
         await UpdateSnapshotIfEnabled("release-versioning-v2.json", json);
 
         var snapshot = await File.ReadAllTextAsync("release-versioning-v2.json", Cancellation);
-        var snapshotDoc = JToken.Parse(snapshot);
+        var snapshotDoc = JsonNode.Parse(snapshot);
 
-        currentDoc.ShouldBeEquivalentTo(snapshotDoc);
+        JsonNode.DeepEquals(currentDoc, snapshotDoc).ShouldBeTrue();
     }
 
     [Fact]
     public async Task release_versioning_v3()
     {
-        var doc = await App.DocGenerator.GenerateAsync("ReleaseVersioning - v3");
-        var json = doc.ToJson();
-        var currentDoc = JToken.Parse(json);
+        var json = await App.GenerateDocumentJsonAsync("ReleaseVersioning - v3");
+        var currentDoc = JsonNode.Parse(json);
 
         await UpdateSnapshotIfEnabled("release-versioning-v3.json", json);
 
         var snapshot = await File.ReadAllTextAsync("release-versioning-v3.json", Cancellation);
-        var snapshotDoc = JToken.Parse(snapshot);
+        var snapshotDoc = JsonNode.Parse(snapshot);
 
-        currentDoc.ShouldBeEquivalentTo(snapshotDoc);
+        JsonNode.DeepEquals(currentDoc, snapshotDoc).ShouldBeTrue();
     }
 }

@@ -21,18 +21,18 @@
 // SOFTWARE.
 
 using FluentValidation.Validators;
-using NJsonSchema;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger.ValidationProcessor;
 
 [HideFromDocs]
-public class RuleContext(JsonSchema schema, string propertyKey, IPropertyValidator propertyValidator, bool hasCondition)
+public class RuleContext(OpenApiSchema schema, string propertyKey, IPropertyValidator propertyValidator, bool hasCondition)
 {
-    public JsonSchema Schema { get; } = schema;
+    public OpenApiSchema Schema { get; } = schema;
 
     public string PropertyKey { get; } = propertyKey;
 
     public IPropertyValidator PropertyValidator { get; } = propertyValidator;
 
-    public bool HasCondition { get; set; } = hasCondition; //used to determine if a property should be marked required or not. if has condition, not required.
+    public bool HasCondition { get; set; } = hasCondition;
 }

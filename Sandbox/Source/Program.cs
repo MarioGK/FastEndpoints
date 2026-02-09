@@ -4,6 +4,6 @@ bld.Services
    .AddFastEndpoints();
 
 var app = bld.Build();
-app.UseFastEndpoints()
-   .UseSwaggerGen();
+app.UseFastEndpoints();
+app.UseSwaggerGen();
 app.Run();

@@ -2,24 +2,15 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FluentValidation;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http.Metadata;
+using Microsoft.AspNetCore.OpenApi;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Namotion.Reflection;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using NJsonSchema;
-using NJsonSchema.Generation;
-using NJsonSchema.NewtonsoftJson.Generation;
-using NSwag;
-using NSwag.AspNetCore;
-using NSwag.Generation;
-using NSwag.Generation.AspNetCore;
-using NSwag.Generation.Processors.Contexts;
-using NSwag.Generation.Processors.Security;
-using JsonSerializer = Newtonsoft.Json.JsonSerializer;
+using Microsoft.OpenApi;
+using Scalar.AspNetCore;
 
 namespace FastEndpoints.Swagger;
 
@@ -33,6 +24,8 @@ public static class Extensions
     /// </summary>
     public static JsonNamingPolicy? SelectedJsonNamingPolicy { get; private set; }
 
+    static int _docIndex;
+
     /// <summary>
     /// enable support for FastEndpoints and create a swagger document.
     /// </summary>
@@ -43,57 +36,99 @@ public static class Extensions
             return services;
 
         services.AddEndpointsApiExplorer();
-        services.AddOpenApiDocument(
-            (genSettings, serviceProvider) =>
+
+        var docName = $"v{Interlocked.Increment(ref _docIndex)}";
+
+        // Pre-resolve document name from user options
+        var tempDocForName = new DocumentOptions(null!);
+        options?.Invoke(tempDocForName);
+        if (tempDocForName.DocumentName is not null)
+            docName = tempDocForName.DocumentName;
+
+        // We need to capture the document options configuration for later use by transformers
+        // Since AddOpenApi doesn't provide IServiceProvider, we store config and let transformers resolve services
+        var docConfig = new DocumentOptionsConfig { ConfigureAction = options };
+
+        services.AddKeyedSingleton(docName, docConfig);
+
+        services.AddOpenApi(
+            docName,
+            openApiOptions =>
             {
-                var doc = new DocumentOptions(serviceProvider);
-                options?.Invoke(doc);
+                // Apply user document settings
+                var tempDoc = new DocumentOptions(null!);
+                options?.Invoke(tempDoc);
 
                 var stjOpts = new JsonSerializerOptions(Cfg.SerOpts.Options);
                 SelectedJsonNamingPolicy = stjOpts.PropertyNamingPolicy;
-                doc.SerializerSettings?.Invoke(stjOpts);
-                var newtonsoftOpts = SystemTextJsonUtilities.ConvertJsonOptionsToNewtonsoftSettings(stjOpts);
-                doc.NewtonsoftSettings?.Invoke(newtonsoftOpts);
-                genSettings.SchemaSettings = new NewtonsoftJsonSchemaGeneratorSettings
-                {
-                    SerializerSettings = newtonsoftOpts,
-                    SchemaType = SchemaType.OpenApi3
-                };
+                tempDoc.SerializerSettings?.Invoke(stjOpts);
 
-                EnableFastEndpoints(genSettings, doc);
+                if (tempDoc.EnableJWTBearerAuth)
+                    openApiOptions.EnableJWTBearerAuth();
 
-                if (doc.EndpointFilter is not null)
-                    genSettings.OperationProcessors.Insert(0, new EndpointFilter(doc.EndpointFilter));
+                if (tempDoc.EndpointFilter is not null)
+                    openApiOptions.AddOperationTransformer(new EndpointFilter(tempDoc.EndpointFilter));
 
-                if (doc.ExcludeNonFastEndpoints)
-                    genSettings.OperationProcessors.Insert(0, new FastEndpointsFilter());
+                if (tempDoc.ExcludeNonFastEndpoints)
+                    openApiOptions.AddOperationTransformer(new FastEndpointsFilter());
 
-                if (doc.TagDescriptions is not null)
+                if (tempDoc.TagDescriptions is not null)
                 {
                     var dict = new Dictionary<string, string>();
-                    doc.TagDescriptions(dict);
-                    genSettings.PostProcess +=
-                        d =>
+                    tempDoc.TagDescriptions(dict);
+                    openApiOptions.AddDocumentTransformer(
+                        (doc, _, _) =>
                         {
+                            doc.Tags ??= new HashSet<OpenApiTag>();
                             foreach (var kvp in dict)
                             {
-                                d.Tags.Add(
+                                doc.Tags.Add(
                                     new()
                                     {
                                         Name = kvp.Key,
                                         Description = kvp.Value
                                     });
                             }
-                        };
+
+                            return Task.CompletedTask;
+                        });
                 }
 
-                if (doc.EnableJWTBearerAuth)
-                    genSettings.EnableJWTBearerAuth();
+                // Register FastEndpoints transformers
+                openApiOptions.AddSchemaTransformer(new ValidationSchemaTransformer());
+                openApiOptions.AddSchemaTransformer(new PolymorphismSchemaTransformer(tempDoc));
+                openApiOptions.AddOperationTransformer(new OperationTransformer(tempDoc, stjOpts));
+                openApiOptions.AddDocumentTransformer(
+                    new DocumentTransformer(
+                        tempDoc.MinEndpointVersion,
+                        tempDoc.MaxEndpointVersion,
+                        tempDoc.ReleaseVersion,
+                        tempDoc.ShowDeprecatedOps));
 
-                doc.DocumentSettings?.Invoke(genSettings);
+                if (tempDoc.RemoveEmptyRequestSchema || tempDoc.FlattenSchema)
+                {
+                    openApiOptions.AddSchemaTransformer(new FlattenSchemaTransformer());
+                }
 
-                if (doc.RemoveEmptyRequestSchema || doc.FlattenSchema)
-                    genSettings.SchemaSettings.FlattenInheritanceHierarchy = true;
+                // Set document title and version via document transformer
+                if (tempDoc.Title is not null || tempDoc.Version is not null)
+                {
+                    var title = tempDoc.Title;
+                    var version = tempDoc.Version;
+                    openApiOptions.AddDocumentTransformer(
+                        (doc, _, _) =>
+                        {
+                            doc.Info ??= new OpenApiInfo();
+                            if (title is not null)
+                                doc.Info.Title = title;
+                            if (version is not null)
+                                doc.Info.Version = version;
+
+                            return Task.CompletedTask;
+                        });
+                }
+
+                tempDoc.DocumentSettings?.Invoke(openApiOptions);
             });
 
         return services;
@@ -101,19 +136,24 @@ public static class Extensions
 
     /// <summary>
     /// enables the open-api/swagger middleware for fastendpoints.
-    /// this method is simply a shortcut for the two calls [<c>app.UseOpenApi()</c>] and [<c>app.UseSwaggerUi3(c => c.ConfigureDefaults())</c>]
+    /// this method maps the OpenApi document endpoint and the Scalar API reference UI.
     /// </summary>
-    /// <param name="config">optional config action for the open-api middleware</param>
-    /// <param name="uiConfig">optional config action for the swagger-ui</param>
-    public static IApplicationBuilder UseSwaggerGen(this IApplicationBuilder app,
-                                                    Action<OpenApiDocumentMiddlewareSettings>? config = null,
-                                                    Action<SwaggerUiSettings>? uiConfig = null)
+    /// <param name="openApiConfig">optional config action for the open-api endpoint</param>
+    /// <param name="scalarConfig">optional config action for the Scalar API reference UI</param>
+    public static WebApplication UseSwaggerGen(this WebApplication app,
+                                               Action<OpenApiOptions>? openApiConfig = null,
+                                               Action<ScalarOptions>? scalarConfig = null)
     {
         if (!RuntimeFeature.IsDynamicCodeSupported)
             throw new NotSupportedException("Not supported in AOT applications! Use Scalar for API visualization.");
 
-        app.UseOpenApi(config);
-        app.UseSwaggerUi((c => c.ConfigureDefaults()) + uiConfig);
+        app.MapOpenApi();
+        app.MapScalarApiReference(
+            o =>
+            {
+                ConfigureScalarDefaults(o);
+                scalarConfig?.Invoke(o);
+            });
 
         return app;
     }
@@ -123,25 +163,37 @@ public static class Extensions
     /// </summary>
     /// <param name="documentOptions">the document options</param>
     /// <param name="serviceProvider">the service provider</param>
-    public static void EnableFastEndpoints(this AspNetCoreOpenApiDocumentGeneratorSettings settings,
+    public static void EnableFastEndpoints(this OpenApiOptions settings,
                                            Action<DocumentOptions> documentOptions,
                                            IServiceProvider serviceProvider)
     {
         var doc = new DocumentOptions(serviceProvider);
         documentOptions(doc);
-        EnableFastEndpoints(settings, doc);
+
+        var stjOpts = new JsonSerializerOptions(Cfg.SerOpts.Options);
+        doc.SerializerSettings?.Invoke(stjOpts);
+
+        settings.AddSchemaTransformer(new ValidationSchemaTransformer());
+        settings.AddSchemaTransformer(new PolymorphismSchemaTransformer(doc));
+        settings.AddOperationTransformer(new OperationTransformer(doc, stjOpts));
+        settings.AddDocumentTransformer(
+            new DocumentTransformer(
+                doc.MinEndpointVersion,
+                doc.MaxEndpointVersion,
+                doc.ReleaseVersion,
+                doc.ShowDeprecatedOps));
     }
 
     /// <summary>
     /// enable jwt bearer authorization support
     /// </summary>
-    public static void EnableJWTBearerAuth(this AspNetCoreOpenApiDocumentGeneratorSettings settings)
+    public static void EnableJWTBearerAuth(this OpenApiOptions settings)
     {
         settings.AddAuth(
             "JWTBearerAuth",
             new()
             {
-                Type = OpenApiSecuritySchemeType.Http,
+                Type = SecuritySchemeType.Http,
                 Scheme = "Bearer",
                 BearerFormat = "JWT",
                 Description = "Enter a JWT token to authorize the requests..."
@@ -149,88 +201,15 @@ public static class Extensions
     }
 
     /// <summary>
-    /// configure swagger ui with some sensible defaults for FastEndpoints which can be overridden if needed.
+    /// configure Scalar API Reference UI with some sensible defaults for FastEndpoints which can be overridden if needed.
     /// </summary>
     /// <param name="settings">provide an action that overrides any of the defaults</param>
-    public static void ConfigureDefaults(this SwaggerUiSettings s, Action<SwaggerUiSettings>? settings = null)
+    public static void ConfigureScalarDefaults(ScalarOptions o, Action<ScalarOptions>? settings = null)
     {
-        s.AdditionalSettings["filter"] = true;
-        s.AdditionalSettings["persistAuthorization"] = true;
-        s.AdditionalSettings["displayRequestDuration"] = true;
-        s.AdditionalSettings["tryItOutEnabled"] = true;
-        s.TagsSorter = "alpha";
-        s.OperationsSorter = "alpha";
-        s.CustomInlineStyles =
-            ".servers-title,.servers{display:none} .swagger-ui .info{margin:10px 0} .swagger-ui .scheme-container{margin:10px 0;padding:10px 0} .swagger-ui .info .title{font-size:25px} .swagger-ui textarea{min-height:150px}";
-        s.CustomHeadContent = """
-                              <script>
-                              const SearchPlugin = (system) => ({
-                                fn: {
-                                  opsFilter: (taggedOps, phrase) => {
-                                    const words = phrase.toLowerCase().split(/\s+/);
-                                    const allOps = JSON.parse(JSON.stringify(taggedOps));
-                                    for (const tagObj in allOps) {
-                                      let ops = allOps[tagObj].operations;
-                                      ops = ops.filter(op => {
-                                        const toLowerSafe = (value) => (value ? value.toLowerCase() : '');
-                                        const searchProps = [
-                                          toLowerSafe(op.path),
-                                          toLowerSafe(op.operation.summary),
-                                          toLowerSafe(op.operation.description),
-                                          toLowerSafe(JSON.stringify(op.operation.parameters)),
-                                          toLowerSafe(JSON.stringify(op.operation.responses)),
-                                          toLowerSafe(JSON.stringify(op.operation.requestBody))
-                                        ];
-                                        return words.every(word => searchProps.some(prop => prop.includes(word)));
-                                      });
-                                      if (ops.length) {
-                                        allOps[tagObj].operations = ops;
-                                      } else {
-                                        delete allOps[tagObj];
-                                      }
-                                    }
-                                    return system.Im.fromJS(allOps);
-                                  }
-                                }
-                              });
-
-                              const initPlugin = () => {
-                                const ui = window.ui || window.swaggerUi;
-                                if (ui && ui.getSystem) {
-                                  ui.getSystem().fn.opsFilter = SearchPlugin(ui.getSystem()).fn.opsFilter;
-                                  const searchBox = document.querySelector('.filter-container input');
-                                  if (searchBox) {
-                                    searchBox.placeholder = "Search...";
-                                    searchBox.addEventListener('input', (event) => {
-                                      const phrase = event.target.value;
-                                      const system = ui.getSystem();
-                                      const taggedOps = system.getState().toJS().taggedOps;
-                                      const filteredOps = system.fn.opsFilter(taggedOps, phrase);
-                                      system.getState().update('taggedOps', () => filteredOps);
-                                    });
-                                  }
-                                } else {
-                                  setTimeout(initPlugin, 250);
-                                }
-                              };
-                              document.addEventListener('DOMContentLoaded', initPlugin);
-                              </script>
-                              """;
-        settings?.Invoke(s);
+        o.DarkMode = true;
+        o.ShowSidebar = true;
+        settings?.Invoke(o);
     }
-
-    /// <summary>
-    /// the "Try It Out" button is activated by default. call this method to de-activate it by default.
-    /// set <see cref="SwaggerUiSettings.EnableTryItOut" /> to <c>false</c> to remove the button from ui.
-    /// </summary>
-    public static void DeActivateTryItOut(this SwaggerUiSettings s)
-        => s.AdditionalSettings.Remove("tryItOutEnabled");
-
-    /// <summary>
-    /// displays the swagger operation id in the swagger ui
-    /// </summary>
-    public static void ShowOperationIDs(this SwaggerUiSettings s)
-        => s.AdditionalSettings["displayOperationId"] = true;
 
     /// <summary>
     /// add swagger auth for this open api document
@@ -238,18 +217,21 @@ public static class Extensions
     /// <param name="schemeName">the authentication scheme</param>
     /// <param name="securityScheme">an open api security scheme object</param>
     /// <param name="globalScopeNames">a collection of global scope names</param>
-    /// <returns></returns>
-    public static OpenApiDocumentGeneratorSettings AddAuth(this OpenApiDocumentGeneratorSettings s,
-                                                           string schemeName,
-                                                           OpenApiSecurityScheme securityScheme,
-                                                           IEnumerable<string>? globalScopeNames = null)
+    public static OpenApiOptions AddAuth(this OpenApiOptions s,
+                                         string schemeName,
+                                         OpenApiSecurityScheme securityScheme,
+                                         IEnumerable<string>? globalScopeNames = null)
     {
-        if (globalScopeNames is null)
-            s.DocumentProcessors.Add(new SecurityDefinitionAppender(schemeName, securityScheme));
-        else
-            s.DocumentProcessors.Add(new SecurityDefinitionAppender(schemeName, globalScopeNames, securityScheme));
+        s.AddDocumentTransformer(
+            (doc, _, _) =>
+            {
+                doc.Components ??= new();
+                doc.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
+                doc.Components.SecuritySchemes[schemeName] = securityScheme;
+                return Task.CompletedTask;
+            });
 
-        s.OperationProcessors.Add(new OperationSecurityProcessor(schemeName));
+        s.AddOperationTransformer(new OperationSecurityTransformer(schemeName));
 
         return s;
     }
@@ -258,19 +240,18 @@ public static class Extensions
     /// mark all non-nullable properties of the schema as required in the swagger document.
     /// this may only be needed for TS client generation with OAS3 swagger definitions.
     /// </summary>
-    public static void MarkNonNullablePropsAsRequired(this AspNetCoreOpenApiDocumentGeneratorSettings x)
-        => x.SchemaSettings.SchemaProcessors.Add(new MarkNonNullablePropsAsRequired());
+    public static void MarkNonNullablePropsAsRequired(this OpenApiOptions x)
+        => x.AddSchemaTransformer(new MarkNonNullablePropsAsRequired());
 
     /// <summary>
-    /// gets the <see cref="EndpointDefinition" /> from the nswag operation processor context if this is a FastEndpoint operation. otherwise returns null.
+    /// gets the <see cref="EndpointDefinition" /> from the operation transformer context if this is a FastEndpoint operation. otherwise returns null.
     /// </summary>
-    public static EndpointDefinition? GetEndpointDefinition(this OperationProcessorContext ctx)
-        => ((AspNetCoreOperationProcessorContext)ctx)
-           .ApiDescription
-           .ActionDescriptor
-           .EndpointMetadata
-           .OfType<EndpointDefinition>()
-           .SingleOrDefault();
+    public static EndpointDefinition? GetEndpointDefinition(this OpenApiOperationTransformerContext ctx)
+        => ctx.Description
+              .ActionDescriptor
+              .EndpointMetadata
+              .OfType<EndpointDefinition>()
+              .SingleOrDefault();
 
     /// <summary>
     /// gets the example object if any, from a given <see cref="DefaultProducesResponseMetadata" /> internal class
@@ -292,9 +273,6 @@ public static class Extensions
     /// <summary>
     /// disable swagger+fluentvalidation integration for a property rule
     /// </summary>
-    /// <param name="applyConditionTo"></param>
-    /// <typeparam name="T"></typeparam>
-    /// <typeparam name="TProperty"></typeparam>
     public static IRuleBuilderOptions<T, TProperty> SwaggerIgnore<T, TProperty>(this IRuleBuilderOptions<T, TProperty> rule,
                                                                                 ApplyConditionTo applyConditionTo = ApplyConditionTo.AllValidators)
     {
@@ -309,25 +287,47 @@ public static class Extensions
     }
 
     internal static bool HasNoProperties(this IDictionary<string, OpenApiMediaType> content)
-        => !content.Any(c => c.GetAllProperties().Any());
+        => !content.Any(c => c.Value.Schema?.Properties?.Count > 0);
 
-    internal static IEnumerable<KeyValuePair<string, JsonSchemaProperty>> GetAllProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
+    internal static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetAllProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
     {
-        return mediaType
-               .Value.Schema.ActualSchema.ActualProperties.Union(
-                   mediaType
-                       .Value.Schema.ActualSchema.AllInheritedSchemas
-                       .Select(s => s.ActualProperties)
-                       .SelectMany(s => s.Select(s => s)));
+        var schema = mediaType.Value.Schema;
+
+        if (schema is not OpenApiSchema concreteSchema)
+            return [];
+
+        return GetSchemaProperties(concreteSchema);
     }
 
-    internal static IEnumerable<KeyValuePair<string, JsonSchemaProperty>> GetAllProperties(this KeyValuePair<string, OpenApiResponse> response)
+    internal static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetAllProperties(this KeyValuePair<string, IOpenApiResponse> response)
     {
-        return response
-               .Value.Schema.ActualSchema.ActualProperties.Union(
-                   response.Value.Schema.ActualSchema.AllInheritedSchemas
-                           .Select(s => s.ActualProperties)
-                           .SelectMany(s => s.Select(s => s)));
+        var firstContent = response.Value.Content?.FirstOrDefault().Value;
+
+        if (firstContent?.Schema is not OpenApiSchema concreteSchema)
+            return [];
+
+        return GetSchemaProperties(concreteSchema);
+    }
+
+    static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetSchemaProperties(OpenApiSchema schema)
+    {
+        var properties = schema.Properties ?? new Dictionary<string, IOpenApiSchema>();
+
+        // Also include properties from AllOf schemas (inherited properties)
+        if (schema.AllOf is { Count: > 0 })
+        {
+            foreach (var allOfSchema in schema.AllOf)
+            {
+                if (allOfSchema.Properties is { Count: > 0 })
+                {
+                    properties = properties.Concat(allOfSchema.Properties)
+                                           .DistinctBy(p => p.Key)
+                                           .ToDictionary(p => p.Key, p => p.Value);
+                }
+            }
+        }
+
+        return properties;
     }
 
     internal static object? GetParentCtorDefaultValue(this PropertyInfo p)
@@ -360,7 +360,7 @@ public static class Extensions
         return string.IsNullOrEmpty(example) ? null : example;
     }
 
-    internal static JToken? GetExampleJToken(this PropertyInfo? p, JsonSerializer serializer)
+    internal static JsonNode? GetExampleJsonNode(this PropertyInfo? p, JsonSerializerOptions serializerOptions)
     {
         var exampleStr = p?.GetXmlExample();
 
@@ -368,11 +368,12 @@ public static class Extensions
             return null;
 
         if (!exampleStr.IsJsonObjectString() && !exampleStr.IsJsonArrayString())
-            return exampleStr;
+            return JsonValue.Create(exampleStr);
 
         try
         {
-            return JToken.FromObject(JsonConvert.DeserializeObject(exampleStr)!, serializer);
+            var deserialized = JsonSerializer.Deserialize<JsonNode>(exampleStr, serializerOptions);
+            return deserialized;
         }
         catch
         {
@@ -405,30 +406,24 @@ public static class Extensions
                ? SelectedJsonNamingPolicy.ConvertName(paramName)
                : paramName;
 
-    internal static bool IsSwagger2(this OperationProcessorContext ctx)
-        => ctx.Settings.SchemaSettings.SchemaType == SchemaType.Swagger2;
-
-    static void EnableFastEndpoints(AspNetCoreOpenApiDocumentGeneratorSettings settings, DocumentOptions opts)
+    internal static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetAllRequestProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
     {
-        var validationProcessor = (ValidationSchemaProcessor)opts.Services.GetRequiredService<IServiceResolver>().CreateSingleton(typeof(ValidationSchemaProcessor));
+        if (mediaType.Value.Schema is not OpenApiSchema rootSchema)
+            return [];
 
-        settings.Title = AppDomain.CurrentDomain.FriendlyName;
-        settings.SchemaSettings.SchemaNameGenerator = new SchemaNameGenerator(opts.ShortSchemaNames);
-        settings.SchemaSettings.SchemaProcessors.Add(validationProcessor);
-        settings.SchemaSettings.SchemaProcessors.Add(new PolymorphismSchemaProcessor(opts));
-        settings.OperationProcessors.Add(new OperationProcessor(opts));
-        settings.DocumentProcessors.Add(new DocumentProcessor(opts.MinEndpointVersion, opts.MaxEndpointVersion, opts.ReleaseVersion, opts.ShowDeprecatedOps));
-    }
+        var allProperties = (rootSchema.Properties ?? new Dictionary<string, IOpenApiSchema>()).ToList();
 
-    internal static IEnumerable<KeyValuePair<string, JsonSchemaProperty>> GetAllRequestProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
-    {
-        var allProperties = mediaType.Value.Schema.ActualSchema.ActualProperties.ToList();
+        if (rootSchema.AllOf is { Count: > 0 })
+        {
+            foreach (var allOfSchema in rootSchema.AllOf)
+            {
+                if (allOfSchema.Properties is { Count: > 0 })
+                    allProperties.AddRange(allOfSchema.Properties);
+            }
+        }
 
-        foreach (var inheritedSchema in mediaType.Value.Schema.ActualSchema.AllInheritedSchemas)
-            allProperties.AddRange(inheritedSchema.ActualProperties);
-
-        var res = new List<KeyValuePair<string, JsonSchemaProperty>>();
-        var visitedSchemas = new HashSet<JsonSchema>();
+        var res = new List<KeyValuePair<string, IOpenApiSchema>>();
+        var visitedSchemas = new HashSet<IOpenApiSchema>();
         const int maxDepth = 100;
 
         TraverseProperties(string.Empty, allProperties.DistinctBy(p => p.Key).ToDictionary(p => p.Key, p => p.Value), res, visitedSchemas, 0, maxDepth);
@@ -436,9 +431,9 @@ public static class Extensions
         return res;
 
         static void TraverseProperties(string parentPath,
-                                       IReadOnlyDictionary<string, JsonSchemaProperty> props,
-                                       List<KeyValuePair<string, JsonSchemaProperty>> result,
-                                       HashSet<JsonSchema> visitedSchemas,
+                                       IDictionary<string, IOpenApiSchema> props,
+                                       List<KeyValuePair<string, IOpenApiSchema>> result,
+                                       HashSet<IOpenApiSchema> visitedSchemas,
                                        int currentDepth,
                                        int maxDepth)
         {
@@ -453,32 +448,32 @@ public static class Extensions
 
                 result.Add(new(currentPath, prop.Value));
 
-                if (!visitedSchemas.Add(prop.Value.ActualSchema))
+                if (!visitedSchemas.Add(prop.Value))
                     continue;
 
-                if (prop.Value.ActualSchema.ActualProperties.Any())
-                    TraverseProperties(currentPath, prop.Value.ActualSchema.ActualProperties, result, visitedSchemas, currentDepth + 1, maxDepth);
+                if (prop.Value.Properties is { Count: > 0 })
+                    TraverseProperties(currentPath, prop.Value.Properties, result, visitedSchemas, currentDepth + 1, maxDepth);
 
-                if (!IsCollectionType(prop.Value))
+                if (prop.Value is not OpenApiSchema concreteSchema || !IsCollectionType(concreteSchema))
                     continue;
 
-                var itemSchema = prop.Value.ActualSchema.Item?.ActualSchema;
+                var itemSchema = concreteSchema.Items;
 
-                if (itemSchema == null || !itemSchema.ActualProperties.Any() || visitedSchemas.Contains(itemSchema))
+                if (itemSchema?.Properties is not { Count: > 0 } || visitedSchemas.Contains(itemSchema))
                     continue;
 
                 var collectionPath = $"{currentPath}[0]";
                 visitedSchemas.Add(itemSchema);
-                TraverseProperties(collectionPath, itemSchema.ActualProperties, result, visitedSchemas, currentDepth + 1, maxDepth);
+                TraverseProperties(collectionPath, itemSchema.Properties, result, visitedSchemas, currentDepth + 1, maxDepth);
             }
         }
 
-        static bool IsCollectionType(JsonSchemaProperty property)
+        static bool IsCollectionType(OpenApiSchema property)
         {
-            return property.ActualSchema.Type == JsonObjectType.Array ||
-                   (property.ActualSchema.Type == JsonObjectType.Object &&
-                    property.ActualSchema.IsNullable(SchemaType.OpenApi3) &&
-                    property.ActualSchema.AllOf.Any(schema => schema.Type == JsonObjectType.Array));
+            return property.Type?.HasFlag(JsonSchemaType.Array) == true ||
+                   (property.Type?.HasFlag(JsonSchemaType.Object) == true &&
+                    property.AllOf is { Count: > 0 } &&
+                    property.AllOf.Any(s => s is OpenApiSchema cs && cs.Type?.HasFlag(JsonSchemaType.Array) == true));
         }
     }
 
@@ -522,17 +517,17 @@ public static class Extensions
         await app.StartAsync();
 
         var logger = app.Services.GetRequiredService<ILogger<SwaggerExportRunner>>();
-        var generator = app.Services.GetRequiredService<IOpenApiDocumentGenerator>();
 
         Directory.CreateDirectory(destinationPath);
+
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.FirstOrDefault() ?? "http://localhost:5000") };
 
         foreach (var docName in documentNames)
         {
             try
             {
                 logger.ExportingSwaggerDoc(docName);
-                var doc = await generator.GenerateAsync(docName);
-                var json = doc.ToJson();
+                var json = await client.GetStringAsync($"/openapi/{docName}.json");
                 var filePath = Path.Combine(destinationPath, $"{docName}.json");
                 await File.WriteAllTextAsync(filePath, json);
                 logger.SwaggerDocExportSuccessful(docName, filePath);
@@ -557,5 +552,169 @@ public static class Extensions
         dict[key] = value;
 
         return value;
+    }
+
+    /// <summary>
+    /// creates an OpenApiSchema for a given .NET type
+    /// </summary>
+    internal static OpenApiSchema CreateSchemaForType(Type type)
+    {
+        var underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+        var isNullable = Nullable.GetUnderlyingType(type) is not null;
+
+        var schema = new OpenApiSchema();
+
+        if (underlyingType == typeof(string))
+            schema.Type = JsonSchemaType.String;
+        else if (underlyingType == typeof(bool))
+            schema.Type = JsonSchemaType.Boolean;
+        else if (underlyingType == typeof(int) || underlyingType == typeof(short) || underlyingType == typeof(byte))
+        {
+            schema.Type = JsonSchemaType.Integer;
+            schema.Format = "int32";
+        }
+        else if (underlyingType == typeof(long))
+        {
+            schema.Type = JsonSchemaType.Integer;
+            schema.Format = "int64";
+        }
+        else if (underlyingType == typeof(float))
+        {
+            schema.Type = JsonSchemaType.Number;
+            schema.Format = "float";
+        }
+        else if (underlyingType == typeof(double))
+        {
+            schema.Type = JsonSchemaType.Number;
+            schema.Format = "double";
+        }
+        else if (underlyingType == typeof(decimal))
+        {
+            schema.Type = JsonSchemaType.Number;
+            schema.Format = "decimal";
+        }
+        else if (underlyingType == typeof(DateTime) || underlyingType == typeof(DateTimeOffset))
+        {
+            schema.Type = JsonSchemaType.String;
+            schema.Format = "date-time";
+        }
+        else if (underlyingType == typeof(DateOnly))
+        {
+            schema.Type = JsonSchemaType.String;
+            schema.Format = "date";
+        }
+        else if (underlyingType == typeof(TimeOnly) || underlyingType == typeof(TimeSpan))
+        {
+            schema.Type = JsonSchemaType.String;
+            schema.Format = "time";
+        }
+        else if (underlyingType == typeof(Guid))
+        {
+            schema.Type = JsonSchemaType.String;
+            schema.Format = "uuid";
+        }
+        else if (underlyingType == typeof(Uri))
+        {
+            schema.Type = JsonSchemaType.String;
+            schema.Format = "uri";
+        }
+        else if (underlyingType == typeof(byte[]))
+        {
+            schema.Type = JsonSchemaType.String;
+            schema.Format = "binary";
+        }
+        else if (underlyingType.IsEnum)
+        {
+            schema.Type = JsonSchemaType.String;
+            schema.Enum = underlyingType.GetEnumNames().Select(n => (JsonNode)JsonValue.Create(n)!).ToList();
+        }
+        else
+            schema.Type = JsonSchemaType.String;
+
+        if (isNullable)
+            schema.Type |= JsonSchemaType.Null;
+
+        return schema;
+    }
+
+    /// <summary>
+    /// generates a sample JSON node from the schema for use as an example
+    /// </summary>
+    internal static JsonNode? GenerateSampleJson(this OpenApiSchema schema)
+    {
+        if (schema.Type?.HasFlag(JsonSchemaType.Object) == true || schema.Properties is { Count: > 0 })
+        {
+            var obj = new JsonObject();
+
+            if (schema.Properties is not null)
+            {
+                foreach (var prop in schema.Properties)
+                {
+                    if (prop.Value is OpenApiSchema propSchema)
+                        obj[prop.Key] = GenerateSampleJson(propSchema);
+                }
+            }
+
+            return obj;
+        }
+
+        if (schema.Type?.HasFlag(JsonSchemaType.Array) == true && schema.Items is OpenApiSchema itemSchema)
+            return new JsonArray(GenerateSampleJson(itemSchema));
+
+        if (schema.Type?.HasFlag(JsonSchemaType.String) == true)
+            return JsonValue.Create("string");
+        if (schema.Type?.HasFlag(JsonSchemaType.Integer) == true)
+            return JsonValue.Create(0);
+        if (schema.Type?.HasFlag(JsonSchemaType.Number) == true)
+            return JsonValue.Create(0.0);
+        if (schema.Type?.HasFlag(JsonSchemaType.Boolean) == true)
+            return JsonValue.Create(false);
+
+        return null;
+    }
+}
+
+/// <summary>
+/// internal config holder for document options
+/// </summary>
+internal sealed class DocumentOptionsConfig
+{
+    public Action<DocumentOptions>? ConfigureAction { get; init; }
+}
+
+/// <summary>
+/// a no-op schema transformer for flattening schema inheritance
+/// </summary>
+internal sealed class FlattenSchemaTransformer : IOpenApiSchemaTransformer
+{
+    public Task TransformAsync(OpenApiSchema schema, OpenApiSchemaTransformerContext context, CancellationToken cancellationToken)
+    {
+        // Flatten AllOf into direct properties
+        if (schema.AllOf is { Count: > 0 })
+        {
+            schema.Properties ??= new Dictionary<string, IOpenApiSchema>();
+            schema.Required ??= new HashSet<string>();
+
+            foreach (var allOfSchema in schema.AllOf)
+            {
+                if (allOfSchema.Properties is not null)
+                {
+                    foreach (var prop in allOfSchema.Properties)
+                    {
+                        schema.Properties.TryAdd(prop.Key, prop.Value);
+                    }
+                }
+
+                if (allOfSchema.Required is not null)
+                {
+                    foreach (var req in allOfSchema.Required)
+                        schema.Required.Add(req);
+                }
+            }
+
+            schema.AllOf.Clear();
+        }
+
+        return Task.CompletedTask;
     }
 }
