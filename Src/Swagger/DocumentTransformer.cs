@@ -38,12 +38,15 @@ sealed class DocumentTransformer : IOpenApiDocumentTransformer
 
     public Task TransformAsync(OpenApiDocument document, OpenApiDocumentTransformerContext context, CancellationToken cancellationToken)
     {
+        if (document.Paths is null || document.Paths.Count == 0)
+            return Task.CompletedTask;
+
         var pathItems = document.Paths
-                                .SelectMany(p => p.Value.Operations)
+                                .SelectMany(p => p.Value.Operations ?? [])
                                 .Select(
                                     o =>
                                     {
-                                        var tagSegments = o.Value.Tags.SingleOrDefault(t => t.Name.StartsWith("|"))?.Name.Split("|");
+                                        var tagSegments = o.Value.Tags?.SingleOrDefault(t => t.Name?.StartsWith("|") == true)?.Name?.Split("|");
 
                                         return new
                                         {
@@ -53,7 +56,7 @@ sealed class DocumentTransformer : IOpenApiDocumentTransformer
                                             startingRelVer = Convert.ToInt32(tagSegments?[3]),
                                             depVer = Convert.ToInt32(tagSegments?[4]),
                                             pathItm = o,
-                                            parentPath = document.Paths.FirstOrDefault(p => p.Value.Operations.Contains(o))
+                                            parentPath = document.Paths.FirstOrDefault(p => p.Value.Operations?.Contains(o) == true)
                                         };
                                     })
                                 .GroupBy(x => x.route)
@@ -92,7 +95,10 @@ sealed class DocumentTransformer : IOpenApiDocumentTransformer
 
         foreach (var p in document.Paths)
         {
-            var isFastEp = p.Value.Operations.Any(o => o.Value.Tags.Any(t => t.Name.StartsWith('|')));
+            if (p.Value.Operations is null)
+                continue;
+
+            var isFastEp = p.Value.Operations.Any(o => o.Value.Tags?.Any(t => t.Name?.StartsWith('|') == true) == true);
 
             if (!isFastEp)
                 continue;
@@ -104,7 +110,7 @@ sealed class DocumentTransformer : IOpenApiDocumentTransformer
 
             foreach (var op in p.Value.Operations)
             {
-                var tagSegments = op.Value.Tags.SingleOrDefault(t => t.Name.StartsWith('|'))?.Name.Split('|');
+                var tagSegments = op.Value.Tags?.SingleOrDefault(t => t.Name?.StartsWith('|') == true)?.Name?.Split('|');
                 var depVer = Convert.ToInt32(tagSegments?[4]);
 
                 var isDeprecated = _docRelVer > 0
@@ -117,7 +123,7 @@ sealed class DocumentTransformer : IOpenApiDocumentTransformer
                 if (isDeprecated && !_showDeprecated)
                     opsToRemove.Add(op.Key);
 
-                var metaTag = op.Value.Tags.SingleOrDefault(t => t.Name.StartsWith('|'));
+                var metaTag = op.Value.Tags?.SingleOrDefault(t => t.Name?.StartsWith('|') == true);
                 if (metaTag is not null)
                     op.Value.Tags.Remove(metaTag);
             }

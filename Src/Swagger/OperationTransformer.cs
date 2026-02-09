@@ -78,10 +78,14 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                     tag = TagName(segments[docOpts.AutoTagPathSegmentIndex - 1], docOpts.TagCase, docOpts.TagStripSymbols);
             }
             if (tag is not null)
+            {
+                op.Tags ??= new HashSet<OpenApiTagReference>();
                 op.Tags.Add(new OpenApiTagReference(tag));
+            }
         }
 
         //this will be later removed from document transformer. this info is needed by the document transformer.
+        op.Tags ??= new HashSet<OpenApiTagReference>();
         op.Tags.Add(new OpenApiTagReference($"|{apiDescription.HttpMethod}:{bareRoute}|{epVer}|{startingRelVer}|{epDef.Version.DeprecatedAt}"));
 
         //handle responses
