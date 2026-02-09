@@ -1,10 +1,8 @@
-﻿using NSwag.Generation.AspNetCore;
-using NSwag.Generation.Processors;
-using NSwag.Generation.Processors.Contexts;
+using Microsoft.AspNetCore.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
-sealed class EndpointFilter : IOperationProcessor
+sealed class EndpointFilter : IOpenApiOperationTransformer
 {
     readonly Func<EndpointDefinition, bool> _filter;
 
@@ -13,18 +11,23 @@ sealed class EndpointFilter : IOperationProcessor
         _filter = filter;
     }
 
-    public bool Process(OperationProcessorContext ctx)
+    public Task TransformAsync(OpenApiOperation operation, OpenApiOperationTransformerContext context, CancellationToken cancellationToken)
     {
-        var def = ((AspNetCoreOperationProcessorContext)ctx)
-                  .ApiDescription
-                  .ActionDescriptor
-                  .EndpointMetadata
-                  .OfType<EndpointDefinition>()
-                  .SingleOrDefault();
+        var def = context.Description
+                         .ActionDescriptor
+                         .EndpointMetadata
+                         .OfType<EndpointDefinition>()
+                         .SingleOrDefault();
 
         if (def is null)
-            return true; //this is not a fast endpoint
+            return Task.CompletedTask; //this is not a fast endpoint
 
-        return _filter(def);
+        if (!_filter(def))
+        {
+            // Mark for removal
+            operation.Description = "__REMOVE_FILTERED_ENDPOINT__";
+        }
+
+        return Task.CompletedTask;
     }
 }
