@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
@@ -17,10 +18,7 @@ sealed class PolymorphismSchemaTransformer(DocumentOptions opts) : IOpenApiSchem
         schema.OneOf ??= [];
         foreach (var mapping in schema.Discriminator.Mapping)
         {
-            schema.OneOf.Add(new OpenApiSchema
-            {
-                Reference = new() { Type = ReferenceType.Schema, Id = mapping.Value.TrimStart('#', '/', 'c', 'o', 'm', 'p', 'n', 'e', 't', 's', 'a', 'h') }
-            });
+            schema.OneOf.Add(mapping.Value);
         }
 
         if (schema.Discriminator.PropertyName is null || schema.Example is not null)

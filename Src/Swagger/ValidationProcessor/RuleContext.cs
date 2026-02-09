@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 using FluentValidation.Validators;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger.ValidationProcessor;
 

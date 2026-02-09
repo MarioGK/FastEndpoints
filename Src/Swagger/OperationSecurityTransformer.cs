@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
@@ -27,10 +28,7 @@ sealed class OperationSecurityTransformer(string schemeName) : IOpenApiOperation
             new()
             {
                 {
-                    new OpenApiSecurityScheme
-                    {
-                        Reference = new() { Type = ReferenceType.SecurityScheme, Id = schemeName }
-                    },
+                    new OpenApiSecuritySchemeReference(schemeName),
                     BuildScopes(epMeta.OfType<AuthorizeAttribute>()).ToList()
                 }
             });

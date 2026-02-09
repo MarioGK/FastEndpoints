@@ -12,6 +12,7 @@ using FluentValidation.Validators;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
@@ -100,7 +101,10 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
         if (schema.AllOf is { Count: > 0 })
         {
             foreach (var allOfSchema in schema.AllOf)
-                ApplyRulesToSchema(allOfSchema, rulesDict, propertyPrefix, services);
+            {
+                if (allOfSchema is OpenApiSchema concreteAllOf)
+                    ApplyRulesToSchema(concreteAllOf, rulesDict, propertyPrefix, services);
+            }
         }
     }
 
@@ -149,8 +153,8 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
 
         if (schema.Properties.TryGetValue(propertyName, out var property))
         {
-            if (property.Properties is { Count: > 0 } && property != schema)
-                ApplyRulesToSchema(property, rulesDict, $"{fullPropertyName}.", services);
+            if (property is OpenApiSchema concreteProp && concreteProp.Properties is { Count: > 0 } && concreteProp != schema)
+                ApplyRulesToSchema(concreteProp, rulesDict, $"{fullPropertyName}.", services);
         }
     }
 
@@ -182,9 +186,11 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                 else
                     continue;
 
-                if (schema.Properties.TryGetValue(propertyName, out var childSchema))
+                if (schema.Properties.TryGetValue(propertyName, out var childSchema) && childSchema is OpenApiSchema concreteChild)
                 {
-                    var targetSchema = SchemaHelper.IsArrayType(childSchema) ? childSchema.Items! : childSchema;
+                    var targetSchema = concreteChild.Type?.HasFlag(JsonSchemaType.Array) == true && concreteChild.Items is OpenApiSchema itemsSchema
+                        ? itemsSchema
+                        : concreteChild;
                     ApplyValidator(targetSchema, childValidator, string.Empty, services);
                 }
 
@@ -230,11 +236,11 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                             if (context.HasCondition)
                                 return;
 
-                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is not null)
+                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is OpenApiSchema concreteProp)
                             {
                                 // Remove Null from type flags if present
-                                if (SchemaHelper.IsNullable(prop))
-                                    SchemaHelper.RemoveNullable(prop);
+                                if (concreteProp.Type?.HasFlag(JsonSchemaType.Null) == true)
+                                    concreteProp.Type &= ~JsonSchemaType.Null;
                             }
                         }
             },
@@ -246,12 +252,12 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                             if (context.HasCondition)
                                 return;
 
-                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is not null)
+                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is OpenApiSchema concreteProp)
                             {
-                                prop.MinLength = 1;
+                                concreteProp.MinLength = 1;
 
-                                if (SchemaHelper.IsNullable(prop))
-                                    SchemaHelper.RemoveNullable(prop);
+                                if (concreteProp.Type?.HasFlag(JsonSchemaType.Null) == true)
+                                    concreteProp.Type &= ~JsonSchemaType.Null;
                             }
                         }
             },
@@ -260,16 +266,16 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                 Matches = propertyValidator => propertyValidator is ILengthValidator,
                 Apply = context =>
                         {
-                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is not true || prop is null)
+                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is not true || prop is not OpenApiSchema concreteProp)
                                 return;
 
                             var lengthValidator = (ILengthValidator)context.PropertyValidator;
                             if (lengthValidator.Max > 0)
-                                prop.MaxLength = lengthValidator.Max;
+                                concreteProp.MaxLength = lengthValidator.Max;
                             if (lengthValidator.GetType() == typeof(MinimumLengthValidator<>) ||
                                 lengthValidator.GetType() == typeof(ExactLengthValidator<>) ||
-                                prop.MinLength is null or 1)
-                                prop.MinLength = lengthValidator.Min;
+                                concreteProp.MinLength is null or 1)
+                                concreteProp.MinLength = lengthValidator.Min;
                         }
             },
             new("Pattern")
@@ -277,10 +283,10 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                 Matches = propertyValidator => propertyValidator is IRegularExpressionValidator,
                 Apply = context =>
                         {
-                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is not null)
+                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is OpenApiSchema concreteProp)
                             {
                                 var regularExpressionValidator = (IRegularExpressionValidator)context.PropertyValidator;
-                                prop.Pattern = regularExpressionValidator.Expression;
+                                concreteProp.Pattern = regularExpressionValidator.Expression;
                             }
                         }
             },
@@ -289,7 +295,7 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                 Matches = propertyValidator => propertyValidator is IComparisonValidator,
                 Apply = context =>
                         {
-                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is not true || prop is null)
+                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is not true || prop is not OpenApiSchema concreteProp)
                                 return;
 
                             var comparisonValidator = (IComparisonValidator)context.PropertyValidator;
@@ -299,18 +305,16 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                                 var valueToCompare = Convert.ToDecimal(comparisonValidator.ValueToCompare);
 
                                 if (comparisonValidator.Comparison == Comparison.GreaterThanOrEqual)
-                                    prop.Minimum = valueToCompare;
+                                    concreteProp.Minimum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
                                 else if (comparisonValidator.Comparison == Comparison.GreaterThan)
                                 {
-                                    prop.Minimum = valueToCompare;
-                                    prop.ExclusiveMinimum = true;
+                                    concreteProp.ExclusiveMinimum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
                                 }
                                 else if (comparisonValidator.Comparison == Comparison.LessThanOrEqual)
-                                    prop.Maximum = valueToCompare;
+                                    concreteProp.Maximum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
                                 else if (comparisonValidator.Comparison == Comparison.LessThan)
                                 {
-                                    prop.Maximum = valueToCompare;
-                                    prop.ExclusiveMaximum = true;
+                                    concreteProp.ExclusiveMaximum = valueToCompare.ToString(System.Globalization.CultureInfo.InvariantCulture);
                                 }
                             }
                         }
@@ -320,7 +324,7 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                 Matches = propertyValidator => propertyValidator is IBetweenValidator,
                 Apply = context =>
                         {
-                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is not true || prop is null)
+                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is not true || prop is not OpenApiSchema concreteProp)
                                 return;
 
                             var betweenValidator = (IBetweenValidator)context.PropertyValidator;
@@ -328,15 +332,17 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                             if (betweenValidator.From.IsNumeric())
                             {
                                 if (betweenValidator.GetType().IsSubClassOfGeneric(typeof(ExclusiveBetweenValidator<,>)))
-                                    prop.ExclusiveMinimum = true;
-                                prop.Minimum = Convert.ToDecimal(betweenValidator.From);
+                                    concreteProp.ExclusiveMinimum = Convert.ToDecimal(betweenValidator.From).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                else
+                                    concreteProp.Minimum = Convert.ToDecimal(betweenValidator.From).ToString(System.Globalization.CultureInfo.InvariantCulture);
                             }
 
                             if (betweenValidator.To.IsNumeric())
                             {
                                 if (betweenValidator.GetType().IsSubClassOfGeneric(typeof(ExclusiveBetweenValidator<,>)))
-                                    prop.ExclusiveMaximum = true;
-                                prop.Maximum = Convert.ToDecimal(betweenValidator.To);
+                                    concreteProp.ExclusiveMaximum = Convert.ToDecimal(betweenValidator.To).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                else
+                                    concreteProp.Maximum = Convert.ToDecimal(betweenValidator.To).ToString(System.Globalization.CultureInfo.InvariantCulture);
                             }
                         }
             },
@@ -345,10 +351,10 @@ sealed class ValidationSchemaTransformer : IOpenApiSchemaTransformer
                 Matches = propertyValidator => propertyValidator.GetType().IsSubClassOfGeneric(typeof(AspNetCoreCompatibleEmailValidator<>)),
                 Apply = context =>
                         {
-                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is not null)
+                            if (context.Schema.Properties?.TryGetValue(context.PropertyKey, out var prop) is true && prop is OpenApiSchema concreteProp)
                             {
-                                prop.Format = "email";
-                                prop.Pattern = "^[^@]+@[^@]+$";
+                                concreteProp.Format = "email";
+                                concreteProp.Pattern = "^[^@]+@[^@]+$";
                             }
                         }
             }

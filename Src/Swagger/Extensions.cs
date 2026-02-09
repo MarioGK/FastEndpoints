@@ -9,7 +9,7 @@ using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Namotion.Reflection;
+using Microsoft.OpenApi;
 using Scalar.AspNetCore;
 
 namespace FastEndpoints.Swagger;
@@ -73,7 +73,7 @@ public static class Extensions
                     openApiOptions.AddDocumentTransformer(
                         (doc, _, _) =>
                         {
-                            doc.Tags ??= [];
+                            doc.Tags ??= new HashSet<OpenApiTag>();
                             foreach (var kvp in dict)
                             {
                                 doc.Tags.Add(
@@ -202,7 +202,7 @@ public static class Extensions
             (doc, _, _) =>
             {
                 doc.Components ??= new();
-                doc.Components.SecuritySchemes ??= new Dictionary<string, OpenApiSecurityScheme>();
+                doc.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
                 doc.Components.SecuritySchemes[schemeName] = securityScheme;
                 return Task.CompletedTask;
             });
@@ -265,29 +265,29 @@ public static class Extensions
     internal static bool HasNoProperties(this IDictionary<string, OpenApiMediaType> content)
         => !content.Any(c => c.Value.Schema?.Properties?.Count > 0);
 
-    internal static IEnumerable<KeyValuePair<string, OpenApiSchema>> GetAllProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
+    internal static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetAllProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
     {
         var schema = mediaType.Value.Schema;
 
-        if (schema is null)
+        if (schema is not OpenApiSchema concreteSchema)
             return [];
 
-        return GetSchemaProperties(schema);
+        return GetSchemaProperties(concreteSchema);
     }
 
-    internal static IEnumerable<KeyValuePair<string, OpenApiSchema>> GetAllProperties(this KeyValuePair<string, OpenApiResponse> response)
+    internal static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetAllProperties(this KeyValuePair<string, IOpenApiResponse> response)
     {
         var firstContent = response.Value.Content?.FirstOrDefault().Value;
 
-        if (firstContent?.Schema is null)
+        if (firstContent?.Schema is not OpenApiSchema concreteSchema)
             return [];
 
-        return GetSchemaProperties(firstContent.Schema);
+        return GetSchemaProperties(concreteSchema);
     }
 
-    static IEnumerable<KeyValuePair<string, OpenApiSchema>> GetSchemaProperties(OpenApiSchema schema)
+    static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetSchemaProperties(OpenApiSchema schema)
     {
-        var properties = schema.Properties ?? new Dictionary<string, OpenApiSchema>();
+        var properties = schema.Properties ?? new Dictionary<string, IOpenApiSchema>();
 
         // Also include properties from AllOf schemas (inherited properties)
         if (schema.AllOf is { Count: > 0 })
@@ -382,24 +382,24 @@ public static class Extensions
                ? SelectedJsonNamingPolicy.ConvertName(paramName)
                : paramName;
 
-    internal static IEnumerable<KeyValuePair<string, OpenApiSchema>> GetAllRequestProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
+    internal static IEnumerable<KeyValuePair<string, IOpenApiSchema>> GetAllRequestProperties(this KeyValuePair<string, OpenApiMediaType> mediaType)
     {
-        if (mediaType.Value.Schema is null)
+        if (mediaType.Value.Schema is not OpenApiSchema rootSchema)
             return [];
 
-        var allProperties = (mediaType.Value.Schema.Properties ?? new Dictionary<string, OpenApiSchema>()).ToList();
+        var allProperties = (rootSchema.Properties ?? new Dictionary<string, IOpenApiSchema>()).ToList();
 
-        if (mediaType.Value.Schema.AllOf is { Count: > 0 })
+        if (rootSchema.AllOf is { Count: > 0 })
         {
-            foreach (var allOfSchema in mediaType.Value.Schema.AllOf)
+            foreach (var allOfSchema in rootSchema.AllOf)
             {
                 if (allOfSchema.Properties is { Count: > 0 })
                     allProperties.AddRange(allOfSchema.Properties);
             }
         }
 
-        var res = new List<KeyValuePair<string, OpenApiSchema>>();
-        var visitedSchemas = new HashSet<OpenApiSchema>();
+        var res = new List<KeyValuePair<string, IOpenApiSchema>>();
+        var visitedSchemas = new HashSet<IOpenApiSchema>();
         const int maxDepth = 100;
 
         TraverseProperties(string.Empty, allProperties.DistinctBy(p => p.Key).ToDictionary(p => p.Key, p => p.Value), res, visitedSchemas, 0, maxDepth);
@@ -407,9 +407,9 @@ public static class Extensions
         return res;
 
         static void TraverseProperties(string parentPath,
-                                       IReadOnlyDictionary<string, OpenApiSchema> props,
-                                       List<KeyValuePair<string, OpenApiSchema>> result,
-                                       HashSet<OpenApiSchema> visitedSchemas,
+                                       IDictionary<string, IOpenApiSchema> props,
+                                       List<KeyValuePair<string, IOpenApiSchema>> result,
+                                       HashSet<IOpenApiSchema> visitedSchemas,
                                        int currentDepth,
                                        int maxDepth)
         {
@@ -430,10 +430,10 @@ public static class Extensions
                 if (prop.Value.Properties is { Count: > 0 })
                     TraverseProperties(currentPath, prop.Value.Properties, result, visitedSchemas, currentDepth + 1, maxDepth);
 
-                if (!IsCollectionType(prop.Value))
+                if (prop.Value is not OpenApiSchema concreteSchema || !IsCollectionType(concreteSchema))
                     continue;
 
-                var itemSchema = prop.Value.Items;
+                var itemSchema = concreteSchema.Items;
 
                 if (itemSchema?.Properties is not { Count: > 0 } || visitedSchemas.Contains(itemSchema))
                     continue;
@@ -446,10 +446,10 @@ public static class Extensions
 
         static bool IsCollectionType(OpenApiSchema property)
         {
-            return SchemaHelper.IsArrayType(property) ||
-                   (SchemaHelper.IsObjectType(property) &&
+            return property.Type?.HasFlag(JsonSchemaType.Array) == true ||
+                   (property.Type?.HasFlag(JsonSchemaType.Object) == true &&
                     property.AllOf is { Count: > 0 } &&
-                    property.AllOf.Any(schema => SchemaHelper.IsArrayType(schema)));
+                    property.AllOf.Any(s => s is OpenApiSchema cs && cs.Type?.HasFlag(JsonSchemaType.Array) == true));
         }
     }
 
@@ -541,59 +541,74 @@ public static class Extensions
         var schema = new OpenApiSchema();
 
         if (underlyingType == typeof(string))
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
         else if (underlyingType == typeof(bool))
-            SchemaHelper.SetBooleanType(schema);
+            schema.Type = JsonSchemaType.Boolean;
         else if (underlyingType == typeof(int) || underlyingType == typeof(short) || underlyingType == typeof(byte))
-            SchemaHelper.SetIntegerType(schema, "int32");
+        {
+            schema.Type = JsonSchemaType.Integer;
+            schema.Format = "int32";
+        }
         else if (underlyingType == typeof(long))
-            SchemaHelper.SetIntegerType(schema, "int64");
+        {
+            schema.Type = JsonSchemaType.Integer;
+            schema.Format = "int64";
+        }
         else if (underlyingType == typeof(float))
-            SchemaHelper.SetNumberType(schema, "float");
+        {
+            schema.Type = JsonSchemaType.Number;
+            schema.Format = "float";
+        }
         else if (underlyingType == typeof(double))
-            SchemaHelper.SetNumberType(schema, "double");
+        {
+            schema.Type = JsonSchemaType.Number;
+            schema.Format = "double";
+        }
         else if (underlyingType == typeof(decimal))
-            SchemaHelper.SetNumberType(schema, "decimal");
+        {
+            schema.Type = JsonSchemaType.Number;
+            schema.Format = "decimal";
+        }
         else if (underlyingType == typeof(DateTime) || underlyingType == typeof(DateTimeOffset))
         {
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
             schema.Format = "date-time";
         }
         else if (underlyingType == typeof(DateOnly))
         {
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
             schema.Format = "date";
         }
         else if (underlyingType == typeof(TimeOnly) || underlyingType == typeof(TimeSpan))
         {
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
             schema.Format = "time";
         }
         else if (underlyingType == typeof(Guid))
         {
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
             schema.Format = "uuid";
         }
         else if (underlyingType == typeof(Uri))
         {
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
             schema.Format = "uri";
         }
         else if (underlyingType == typeof(byte[]))
         {
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
             schema.Format = "binary";
         }
         else if (underlyingType.IsEnum)
         {
-            SchemaHelper.SetStringType(schema);
-            SchemaHelper.SetEnumValues(schema, underlyingType.GetEnumNames().Select(n => (JsonNode)JsonValue.Create(n)!).ToList());
+            schema.Type = JsonSchemaType.String;
+            schema.Enum = underlyingType.GetEnumNames().Select(n => (JsonNode)JsonValue.Create(n)!).ToList();
         }
         else
-            SchemaHelper.SetStringType(schema);
+            schema.Type = JsonSchemaType.String;
 
         if (isNullable)
-            SchemaHelper.MakeNullable(schema);
+            schema.Type |= JsonSchemaType.Null;
 
         return schema;
     }
@@ -603,7 +618,7 @@ public static class Extensions
     /// </summary>
     internal static JsonNode? GenerateSampleJson(this OpenApiSchema schema)
     {
-        if (SchemaHelper.IsObjectType(schema) || schema.Properties is { Count: > 0 })
+        if (schema.Type?.HasFlag(JsonSchemaType.Object) == true || schema.Properties is { Count: > 0 })
         {
             var obj = new JsonObject();
 
@@ -611,23 +626,24 @@ public static class Extensions
             {
                 foreach (var prop in schema.Properties)
                 {
-                    obj[prop.Key] = GenerateSampleJson(prop.Value);
+                    if (prop.Value is OpenApiSchema propSchema)
+                        obj[prop.Key] = GenerateSampleJson(propSchema);
                 }
             }
 
             return obj;
         }
 
-        if (SchemaHelper.IsArrayType(schema) && schema.Items is not null)
-            return new JsonArray(GenerateSampleJson(schema.Items));
+        if (schema.Type?.HasFlag(JsonSchemaType.Array) == true && schema.Items is OpenApiSchema itemSchema)
+            return new JsonArray(GenerateSampleJson(itemSchema));
 
-        if (SchemaHelper.IsStringType(schema))
+        if (schema.Type?.HasFlag(JsonSchemaType.String) == true)
             return JsonValue.Create("string");
-        if (SchemaHelper.IsIntegerType(schema))
+        if (schema.Type?.HasFlag(JsonSchemaType.Integer) == true)
             return JsonValue.Create(0);
-        if (SchemaHelper.IsNumberType(schema))
+        if (schema.Type?.HasFlag(JsonSchemaType.Number) == true)
             return JsonValue.Create(0.0);
-        if (SchemaHelper.IsBooleanType(schema))
+        if (schema.Type?.HasFlag(JsonSchemaType.Boolean) == true)
             return JsonValue.Create(false);
 
         return null;
@@ -652,7 +668,7 @@ internal sealed class FlattenSchemaTransformer : IOpenApiSchemaTransformer
         // Flatten AllOf into direct properties
         if (schema.AllOf is { Count: > 0 })
         {
-            schema.Properties ??= new Dictionary<string, OpenApiSchema>();
+            schema.Properties ??= new Dictionary<string, IOpenApiSchema>();
             schema.Required ??= new HashSet<string>();
 
             foreach (var allOfSchema in schema.AllOf)

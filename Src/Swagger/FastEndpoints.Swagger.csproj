@@ -13,7 +13,6 @@
         <ProjectReference Include="..\Library\FastEndpoints.csproj"/>
 
         <PackageReference Include="Microsoft.AspNetCore.OpenApi"/>
-        <PackageReference Include="Namotion.Reflection"/>
         <PackageReference Include="Scalar.AspNetCore"/>
         <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All"/>
     </ItemGroup>

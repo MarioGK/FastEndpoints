@@ -9,7 +9,7 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.AspNetCore.Routing;
-using Namotion.Reflection;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
@@ -78,11 +78,11 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                     tag = TagName(segments[docOpts.AutoTagPathSegmentIndex - 1], docOpts.TagCase, docOpts.TagStripSymbols);
             }
             if (tag is not null)
-                op.Tags.Add(new() { Name = tag });
+                op.Tags.Add(new OpenApiTagReference(tag));
         }
 
         //this will be later removed from document transformer. this info is needed by the document transformer.
-        op.Tags.Add(new() { Name = $"|{apiDescription.HttpMethod}:{bareRoute}|{epVer}|{startingRelVer}|{epDef.Version.DeprecatedAt}" });
+        op.Tags.Add(new OpenApiTagReference($"|{apiDescription.HttpMethod}:{bareRoute}|{epVer}|{startingRelVer}|{epDef.Version.DeprecatedAt}"));
 
         //handle responses
         if (op.Responses.Count > 0)
@@ -119,11 +119,13 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                     if (!metas.TryGetValue(rsp.Key, out var x))
                         continue;
 
-                    var mediaType = rsp.Value.Content?.FirstOrDefault().Value;
+                    var concreteRsp = (OpenApiResponse)rsp.Value;
+
+                    var mediaType = concreteRsp.Content?.FirstOrDefault().Value;
 
                     //set user provided response examples
                     if (mediaType is not null && x.example is not null)
-                        SchemaHelper.SetExample(mediaType, x.example);
+                        mediaType.Example = x.example;
 
                     //set user provided response headers from dto [ToHeader] properties
                     if (x.tDto is not null)
@@ -135,20 +137,20 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                             var headerName = p.GetCustomAttribute<ToHeaderAttribute>()?.HeaderName ?? p.Name.ApplyPropNamingPolicy(docOpts);
                             var summaryTag = p.GetXmlDocsSummary();
                             var schema = Extensions.CreateSchemaForType(p.PropertyType);
-                            rsp.Value.Headers ??= new Dictionary<string, OpenApiHeader>();
+                            concreteRsp.Headers ??= new Dictionary<string, IOpenApiHeader>();
                             var header = new OpenApiHeader
                             {
                                 Description = summaryTag,
                                 Schema = schema
                             };
-                            SchemaHelper.SetExample(header, p.GetExampleJsonNode(serializerOptions) ?? schema.GenerateSampleJson());
-                            rsp.Value.Headers[headerName] = header;
+                            header.Example = p.GetExampleJsonNode(serializerOptions) ?? schema.GenerateSampleJson();
+                            concreteRsp.Headers[headerName] = header;
                         }
                     }
 
                     if (x.usrHeaders?.Length > 0)
                     {
-                        rsp.Value.Headers ??= new Dictionary<string, OpenApiHeader>();
+                        concreteRsp.Headers ??= new Dictionary<string, IOpenApiHeader>();
                         foreach (var hdr in x.usrHeaders)
                         {
                             var hdrObj = new OpenApiHeader
@@ -156,27 +158,27 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                                 Description = hdr.Description,
                                 Schema = hdr.Example is not null ? Extensions.CreateSchemaForType(hdr.Example.GetType()) : null
                             };
-                            SchemaHelper.SetExample(hdrObj, hdr.Example is not null ? JsonSerializer.SerializeToNode(hdr.Example, serializerOptions) : null);
-                            rsp.Value.Headers[hdr.HeaderName] = hdrObj;
+                            hdrObj.Example = hdr.Example is not null ? JsonSerializer.SerializeToNode(hdr.Example, serializerOptions) : null;
+                            concreteRsp.Headers[hdr.HeaderName] = hdrObj;
                         }
                     }
 
                     //fix response content-types not displaying correctly
                     if (mediaType is not null && x.cTypes.Any())
                     {
-                        rsp.Value.Content?.Clear();
-                        rsp.Value.Content ??= new Dictionary<string, OpenApiMediaType>();
+                        concreteRsp.Content?.Clear();
+                        concreteRsp.Content ??= new Dictionary<string, OpenApiMediaType>();
                         foreach (var ct in x.cTypes)
-                            rsp.Value.Content[ct] = mediaType;
+                            concreteRsp.Content[ct] = mediaType;
                     }
 
                     //fix byte[] format
-                    if (rsp.Value.Content is not null)
+                    if (concreteRsp.Content is not null)
                     {
-                        foreach (var content in rsp.Value.Content.Values)
+                        foreach (var content in concreteRsp.Content.Values)
                         {
-                            if (content.Schema is not null && SchemaHelper.IsStringType(content.Schema) && content.Schema.Format == "byte")
-                                content.Schema.Format = "binary";
+                            if (content.Schema is OpenApiSchema byteSchema && byteSchema.Type?.HasFlag(JsonSchemaType.String) == true && byteSchema.Format == "byte")
+                                byteSchema.Format = "binary";
                         }
                     }
                 }
@@ -247,7 +249,7 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                 {
                     reqParamDescriptions[prop.Key] = new(
                         prop.Value.Description,
-                        SchemaHelper.GetExample(prop.Value));
+                        prop.Value is OpenApiSchema s ? s.Example : null);
                 }
             }
         }
@@ -284,7 +286,8 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                         continue;
 
                     prop.Value.Description = x.Description;
-                    SchemaHelper.SetExample(prop.Value, x.Example);
+                    if (prop.Value is OpenApiSchema propSchema)
+                        propSchema.Example = x.Example;
                 }
             }
         }
@@ -395,9 +398,9 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
         if (epDef.IdempotencyOptions is not null)
         {
             var prm = CreateParam(ParameterLocation.Header, null, epDef.IdempotencyOptions.HeaderName, true, reqParamDescriptions, docOpts, opPath);
-            SchemaHelper.SetExample(prm, epDef.IdempotencyOptions.SwaggerExampleGenerator is not null
+            prm.Example = epDef.IdempotencyOptions.SwaggerExampleGenerator is not null
                 ? JsonSerializer.SerializeToNode(epDef.IdempotencyOptions.SwaggerExampleGenerator(), serializerOptions)
-                : null);
+                : null;
             prm.Description = epDef.IdempotencyOptions.SwaggerHeaderDescription;
             if (epDef.IdempotencyOptions.SwaggerHeaderType is not null)
                 prm.Schema = Extensions.CreateSchemaForType(epDef.IdempotencyOptions.SwaggerHeaderType);
@@ -436,7 +439,7 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
             if (firstContent is not null)
             {
                 firstContent.Schema = bodyParam.Schema;
-                SchemaHelper.SetRequired((OpenApiRequestBody)op.RequestBody, SchemaHelper.GetRequired(bodyParam));
+                ((OpenApiRequestBody)op.RequestBody).Required = bodyParam.Required;
                 op.RequestBody.Description = bodyParam.Description;
             }
         }
@@ -450,7 +453,7 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
             if (firstContent is not null)
             {
                 firstContent.Schema = bodyParam.Schema;
-                SchemaHelper.SetRequired((OpenApiRequestBody)op.RequestBody, SchemaHelper.GetRequired(bodyParam));
+                ((OpenApiRequestBody)op.RequestBody).Required = bodyParam.Required;
                 op.RequestBody.Description = bodyParam.Description;
             }
         }
@@ -464,7 +467,7 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
             {
                 var requestBody = op.RequestBody?.Content?.FirstOrDefault().Value;
                 if (requestBody is not null)
-                    SchemaHelper.SetExample(requestBody, GetExampleObjectFrom(epDef.EndpointSummary.RequestExamples.First()));
+                    requestBody.Example = GetExampleObjectFrom(epDef.EndpointSummary.RequestExamples.First());
             }
             else
             {
@@ -481,7 +484,7 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                 var firstContentType = reqContent?.FirstOrDefault().Value;
                 if (firstContentType is not null)
                 {
-                    firstContentType.Examples ??= new Dictionary<string, OpenApiExample>();
+                    firstContentType.Examples ??= new Dictionary<string, IOpenApiExample>();
                     foreach (var example in epDef.EndpointSummary.RequestExamples)
                     {
                         var oaExample = new OpenApiExample
@@ -489,7 +492,7 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
                             Summary = example.Summary,
                             Description = example.Description,
                         };
-                        SchemaHelper.SetExampleValue(oaExample, GetExampleObjectFrom(example));
+                        oaExample.Value = GetExampleObjectFrom(example);
                         firstContentType.Examples[example.Label] = oaExample;
                     }
                 }
@@ -574,9 +577,8 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
 
         foreach (var c in content)
         {
-            var schema = c.Value.Schema;
-            if (schema is null) continue;
-            RemoveFromSchema(schema, propName);
+            if (c.Value.Schema is OpenApiSchema concreteSchema)
+                RemoveFromSchema(concreteSchema, propName);
         }
 
         static void RemoveFromSchema(OpenApiSchema schema, string key)
@@ -587,7 +589,10 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
             if (schema.AllOf is not null)
             {
                 foreach (var s in schema.AllOf)
-                    RemoveFromSchema(s, key);
+                {
+                    if (s is OpenApiSchema allOfSchema)
+                        RemoveFromSchema(allOfSchema, key);
+                }
             }
         }
     }
@@ -649,14 +654,14 @@ sealed partial class OperationTransformer(DocumentOptions docOpts, JsonSerialize
         };
 
         if (prop?.GetCustomAttribute<DefaultValueAttribute>()?.Value is { } defVal)
-            SchemaHelper.SetDefault((OpenApiSchema)prm.Schema, JsonSerializer.SerializeToNode(defVal));
+            ((OpenApiSchema)prm.Schema).Default = JsonSerializer.SerializeToNode(defVal);
         else if (defaultValFromCtorArg is not null)
-            SchemaHelper.SetDefault((OpenApiSchema)prm.Schema, JsonSerializer.SerializeToNode(defaultValFromCtorArg));
+            ((OpenApiSchema)prm.Schema).Default = JsonSerializer.SerializeToNode(defaultValFromCtorArg);
 
         if (descriptions?.TryGetValue(prop?.Name ?? prm.Name, out var desc) is true && desc?.Example is not null)
-            SchemaHelper.SetExample(prm, desc.Example);
+            prm.Example = desc.Example;
         else
-            SchemaHelper.SetExample(prm, prop?.GetExampleJsonNode(null!));
+            prm.Example = prop?.GetExampleJsonNode(null!);
 
         return prm;
     }

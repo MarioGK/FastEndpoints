@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
@@ -10,8 +11,7 @@ sealed class FastEndpointsFilter : IOpenApiOperationTransformer
 
         if (!metaData.OfType<EndpointDefinition>().Any())
         {
-            // Mark for removal - we'll set a flag via extensions
-            operation.Extensions ??= new Dictionary<string, Microsoft.OpenApi.Interfaces.IOpenApiExtension>();
+            // Mark for removal
             operation.Description = "__REMOVE_NON_FASTENDPOINT__";
         }
 

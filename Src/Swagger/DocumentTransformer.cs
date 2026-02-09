@@ -1,4 +1,6 @@
+using System.Net.Http;
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
@@ -73,7 +75,7 @@ sealed class DocumentTransformer : IOpenApiDocumentTransformer
                                                            {
                                                                if (x.isFastEp && x.epVer == latestVersion)
                                                                {
-                                                                   x.pathItm.Value.Extensions ??= new Dictionary<string, Microsoft.OpenApi.Interfaces.IOpenApiExtension>();
+                                                                   x.pathItm.Value.Extensions ??= new Dictionary<string, IOpenApiExtension>();
                                                                }
 
                                                                return x;
@@ -98,7 +100,7 @@ sealed class DocumentTransformer : IOpenApiDocumentTransformer
             if (!pathItems.Contains(p.Key))
                 pathsToRemove.Add(p.Key);
 
-            var opsToRemove = new List<OperationType>();
+            var opsToRemove = new List<HttpMethod>();
 
             foreach (var op in p.Value.Operations)
             {

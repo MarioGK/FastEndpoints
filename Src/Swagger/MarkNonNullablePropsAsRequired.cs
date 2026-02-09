@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.OpenApi;
 
 namespace FastEndpoints.Swagger;
 
@@ -13,7 +14,7 @@ sealed class MarkNonNullablePropsAsRequired : IOpenApiSchemaTransformer
 
         foreach (var (name, prop) in schema.Properties)
         {
-            if (!SchemaHelper.IsNullable(prop))
+            if (prop is OpenApiSchema concreteSchema && concreteSchema.Type.HasValue && !concreteSchema.Type.Value.HasFlag(JsonSchemaType.Null))
                 schema.Required.Add(name);
         }
 
